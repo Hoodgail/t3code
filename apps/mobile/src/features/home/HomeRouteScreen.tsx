@@ -1,7 +1,7 @@
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { Platform, useWindowDimensions } from "react-native";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
@@ -22,10 +22,12 @@ import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
+import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
 export function HomeRouteScreen() {
+  const nativePrimaryColumn = use(NativePrimaryColumnContext);
   const { width: windowWidth } = useWindowDimensions();
   const { layout, panes } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
@@ -107,7 +109,7 @@ export function HomeRouteScreen() {
 
   // In split layouts the persistent sidebar IS the thread list — Home becomes
   // an empty detail pane so selecting a thread never transitions layouts.
-  if (layout.usesSplitView) {
+  if (layout.usesSplitView && !nativePrimaryColumn) {
     return (
       <>
         <NativeStackScreenOptions

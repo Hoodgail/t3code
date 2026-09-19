@@ -218,7 +218,9 @@ patchedDependencies:
   react-native-gesture-handler@3.2.1: patches/react-native-gesture-handler@3.2.1.patch
   react-native-keyboard-controller@1.21.13: patches/react-native-keyboard-controller@1.21.13.patch
   react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch
-  react-native-screens@4.27.0: patches/react-native-screens@4.27.0.patch
+  # Split-column stack PoC: software-mansion/react-native-screens PR 4666,
+  # pinned at b604a9f78f4c4ff2ea7b68d6f0a0efc06821fde5 and packed without prepare.
+  react-native-screens@1000.0.0: patches/react-native-screens@1000.0.0.patch
   uniwind@1.11.0: patches/uniwind@1.11.0.patch
 
 peerDependencyRules:

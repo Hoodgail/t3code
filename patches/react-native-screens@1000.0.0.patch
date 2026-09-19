@@ -1,0 +1,2039 @@
+diff --git a/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderConfigViewManager.kt b/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderConfigViewManager.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderConfigViewManager.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderConfigViewManager.kt
+@@ -124,6 +124,34 @@
+         config.setTitle(title)
+     }
+ 
++    // The t3 patch adds these iOS glass-chrome props to the native spec; they have
++    // no Android implementation, but the codegen-generated interface requires the
++    // setters to exist. No-ops keep the Android build compiling.
++    override fun setSubtitle(
++        config: ScreenStackHeaderConfig,
++        subtitle: String?,
++    ) = Unit
++
++    override fun setLargeSubtitle(
++        config: ScreenStackHeaderConfig,
++        largeSubtitle: String?,
++    ) = Unit
++
++    override fun setNavigationItemStyle(
++        config: ScreenStackHeaderConfig,
++        navigationItemStyle: String?,
++    ) = Unit
++
++    override fun setHeaderCenterBarButtonItems(
++        config: ScreenStackHeaderConfig,
++        headerCenterBarButtonItems: ReadableArray?,
++    ) = Unit
++
++    override fun setHeaderToolbarItems(
++        config: ScreenStackHeaderConfig,
++        headerToolbarItems: ReadableArray?,
++    ) = Unit
++
+     override fun setTitleFontFamily(
+         config: ScreenStackHeaderConfig,
+         titleFontFamily: String?,
+diff --git a/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderSubviewManager.kt b/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderSubviewManager.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderSubviewManager.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/legacy/ScreenStackHeaderSubviewManager.kt
+@@ -47,6 +47,12 @@
+         Log.w("[RNScreens]", "hidesSharedBackground prop is not available on Android")
+     }
+ 
++    // Bar button transition identifiers only apply on iOS.
++    override fun setIdentifier(
++        view: ScreenStackHeaderSubview,
++        identifier: String?,
++    ) = Unit
++
+     // synchronousShadowStateUpdatesEnabled is not available on Android atm,
+     // however we must override their setters
+     override fun setSynchronousShadowStateUpdatesEnabled(
+diff --git a/ios/header/RNSHeaderConfigComponentView.mm b/ios/header/RNSHeaderConfigComponentView.mm
+--- a/ios/header/RNSHeaderConfigComponentView.mm
++++ b/ios/header/RNSHeaderConfigComponentView.mm
+@@ -1,4 +1,5 @@
+ #import "RNSHeaderConfigComponentView.h"
++#import "RNSSearchBar.h"
+ #import "RNSConversions.h"
+ #import "RNSHeaderAppearanceMapper.h"
+ #import "RNSHeaderConfigEventEmitter.h"
+@@ -27,7 +28,7 @@
+ static void RNSAssertIsValidHeaderChild(UIView *child)
+ {
+   RCTAssert([child isKindOfClass:RNSHeaderItemComponentView.class] ||
+-                [child isKindOfClass:RNSHeaderItemSpacerComponentView.class],
++                [child isKindOfClass:RNSHeaderItemSpacerComponentView.class] || [child isKindOfClass:RNSSearchBar.class],
+             @"[RNScreens] Unexpected child of type: %@, expected %@ or %@",
+             child.class,
+             RNSHeaderItemComponentView.class,
+@@ -73,6 +74,24 @@
+   _titleMenu = nil;
+   _standardAppearance = nil;
+   _scrollEdgeAppearance = nil;
++}
++
++- (BOOL)backButtonHidden
++{
++  return std::static_pointer_cast<const react::RNSHeaderConfigIOSProps>(_props)->backButtonHidden;
++}
++
++- (BOOL)editorStyle
++{
++  return std::static_pointer_cast<const react::RNSHeaderConfigIOSProps>(_props)->editorStyle;
++}
++
++- (RNSSearchBar *)searchBar
++{
++  for (id child in _children) {
++    if ([child isKindOfClass:RNSSearchBar.class]) return child;
++  }
++  return nil;
+ }
+ 
+ - (NSArray<id> *)children
+diff --git a/ios/header/RNSHeaderConfigDataProviding.h b/ios/header/RNSHeaderConfigDataProviding.h
+--- a/ios/header/RNSHeaderConfigDataProviding.h
++++ b/ios/header/RNSHeaderConfigDataProviding.h
+@@ -3,11 +3,15 @@
+ #import <UIKit/UIKit.h>
+ 
+ @class RNSHeaderMenuData;
++@class RNSSearchBar;
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
+ @protocol RNSHeaderConfigDataProviding <NSObject>
+ 
++@property (nonatomic, readonly, nullable) RNSSearchBar *searchBar;
++@property (nonatomic, readonly) BOOL editorStyle;
++@property (nonatomic, readonly) BOOL backButtonHidden;
+ @property (nonatomic, readonly, nullable) NSString *title;
+ @property (nonatomic, readonly, nullable) NSString *subtitle;
+ @property (nonatomic, readonly) BOOL hidden;
+diff --git a/ios/header/RNSHeaderContentFactory.mm b/ios/header/RNSHeaderContentFactory.mm
+--- a/ios/header/RNSHeaderContentFactory.mm
++++ b/ios/header/RNSHeaderContentFactory.mm
+@@ -65,6 +65,12 @@
+     barButtonItem.image = syncImage ? syncImage : [RNSHeaderIconResolver placeholderImageForIcon:item.icon];
+   }
+ 
++#if !TARGET_OS_TV && !TARGET_OS_VISION && RNS_IPHONE_OS_VERSION_AVAILABLE(27_1)
++  if (@available(iOS 27.1, *)) {
++    if (item.axisBehavior == 1) barButtonItem.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
++    if (item.axisBehavior == 2) barButtonItem.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
++  }
++#endif
+   return barButtonItem;
+ }
+ 
+diff --git a/ios/header/RNSHeaderCoordinator.mm b/ios/header/RNSHeaderCoordinator.mm
+--- a/ios/header/RNSHeaderCoordinator.mm
++++ b/ios/header/RNSHeaderCoordinator.mm
+@@ -1,4 +1,5 @@
+ #import "RNSHeaderCoordinator.h"
++#import "RNSSearchBar.h"
+ #import <React/RCTAssert.h>
+ #import <React/RCTLog.h>
+ #import "RNSDefines.h"
+@@ -422,6 +423,21 @@
+   UINavigationItem *navItem = controller.navigationItem;
+ 
+   navItem.title = _configDataProvider.title;
++#if !TARGET_OS_TV
++  navItem.hidesBackButton = _configDataProvider.backButtonHidden;
++  RNSSearchBar *searchBar = _configDataProvider.searchBar;
++  navItem.searchController = searchBar.controller;
++  navItem.hidesSearchBarWhenScrolling = searchBar == nil ? YES : searchBar.hideWhenScrolling;
++  if (@available(iOS 16.0, *)) {
++    navItem.preferredSearchBarPlacement = searchBar == nil ? UINavigationItemSearchBarPlacementAutomatic : [searchBar placementAsUINavigationItemSearchBarPlacement];
++  }
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++  if (@available(iOS 26.0, *)) {
++    navItem.style = _configDataProvider.editorStyle ? UINavigationItemStyleEditor : UINavigationItemStyleNavigator;
++    navItem.searchBarPlacementAllowsToolbarIntegration = searchBar.allowToolbarIntegration;
++  }
++#endif
++#endif
+   navItem.standardAppearance = _configDataProvider.standardAppearance;
+   navItem.scrollEdgeAppearance = _configDataProvider.scrollEdgeAppearance;
+ 
+diff --git a/ios/header/RNSHeaderItemComponentView.mm b/ios/header/RNSHeaderItemComponentView.mm
+--- a/ios/header/RNSHeaderItemComponentView.mm
++++ b/ios/header/RNSHeaderItemComponentView.mm
+@@ -73,6 +73,16 @@
+   _menu = menuProp;
+ }
+ 
++- (NSInteger)axisBehavior
++{
++  const auto &props = *std::static_pointer_cast<const react::RNSHeaderItemIOSProps>(_props);
++  switch (props.axisBehavior) {
++    case react::RNSHeaderItemIOSAxisBehavior::HorizontalOnly: return 1;
++    case react::RNSHeaderItemIOSAxisBehavior::VerticalPreferred: return 2;
++    default: return 0;
++  }
++}
++
+ - (void)emitOnPress
+ {
+   [_headerItemEventEmitter emitOnPress];
+diff --git a/ios/header/RNSHeaderItemDataProviding.h b/ios/header/RNSHeaderItemDataProviding.h
+--- a/ios/header/RNSHeaderItemDataProviding.h
++++ b/ios/header/RNSHeaderItemDataProviding.h
+@@ -10,6 +10,7 @@
+ 
+ @protocol RNSHeaderItemDataProviding <NSObject>
+ 
++@property (nonatomic, readonly) NSInteger axisBehavior;
+ @property (nonatomic, readonly) RNSHeaderItemPlacement placement;
+ @property (nonatomic, readonly, nullable) NSString *itemId;
+ @property (nonatomic, readonly, nullable) NSString *identifier;
+diff --git a/ios/helpers/stack/RNSStackNavigationController.h b/ios/helpers/stack/RNSStackNavigationController.h
+--- a/ios/helpers/stack/RNSStackNavigationController.h
++++ b/ios/helpers/stack/RNSStackNavigationController.h
+@@ -12,6 +12,9 @@
+ 
+ @property (nonatomic, readonly, nonnull) RNSStackNavigationBarCoordinator *navigationBarCoordinator;
+ 
++// Split columns can be empty while the compact presentation shows the list.
++@property (nonatomic) BOOL allowsEmptyStack;
++
+ - (void)enqueuePushOperation:(nonnull UIView<RNSStackScreenProviding> *)stackScreen;
+ 
+ - (void)enqueuePopOperation:(nonnull UIView<RNSStackScreenProviding> *)stackScreen;
+diff --git a/ios/helpers/stack/RNSStackNavigationController.mm b/ios/helpers/stack/RNSStackNavigationController.mm
+--- a/ios/helpers/stack/RNSStackNavigationController.mm
++++ b/ios/helpers/stack/RNSStackNavigationController.mm
+@@ -109,16 +109,22 @@
+   }
+ 
+   for ([[maybe_unused]] RNSPopOperation *op in _pendingPopOperations) {
+-    RCTAssert([self.viewControllers count] > 1, @"[RNScreens] Attempt to pop last screen from the stack");
++    RCTAssert(self.allowsEmptyStack || [self.viewControllers count] > 1,
++              @"[RNScreens] Attempt to pop last screen from the stack");
+     RCTAssert(self.topViewController == op.stackScreen.controller, @"[RNScreens] Attempt to pop non-top screen");
+-    [self popViewControllerAnimated:YES];
++    if (self.allowsEmptyStack && self.viewControllers.count == 1) {
++      [self setViewControllers:@[] animated:NO];
++    } else {
++      [self popViewControllerAnimated:YES];
++    }
+   }
+ 
+   for (RNSPushOperation *op in _pendingPushOperations) {
+     [self pushViewController:op.stackScreen.controller animated:YES];
+   }
+ 
+-  RCTAssert([self.viewControllers count] > 0, @"[RNScreens] Stack should never be empty after updates");
++  RCTAssert(self.allowsEmptyStack || [self.viewControllers count] > 0,
++            @"[RNScreens] Stack should never be empty after updates");
+ 
+   [self dumpStackModel];
+ 
+diff --git a/ios/legacy/RNSBarButtonItem.h b/ios/legacy/RNSBarButtonItem.h
+--- a/ios/legacy/RNSBarButtonItem.h
++++ b/ios/legacy/RNSBarButtonItem.h
+@@ -15,6 +15,10 @@
+                         action:(RNSBarButtonItemAction)action
+                     menuAction:(RNSBarButtonMenuItemAction)menuAction
+                    imageLoader:(RCTImageLoader *)imageLoader;
++
+++ (UIMenu *)initUIMenuWithDict:(NSDictionary<NSString *, id> *)dict
++                    menuAction:(RNSBarButtonMenuItemAction)menuAction
++                   imageLoader:(RCTImageLoader *)imageLoader;
+ #endif // defined(__cplusplus)
+ 
+ @end
+diff --git a/ios/legacy/RNSBarButtonItem.mm b/ios/legacy/RNSBarButtonItem.mm
+--- a/ios/legacy/RNSBarButtonItem.mm
++++ b/ios/legacy/RNSBarButtonItem.mm
+@@ -110,6 +110,58 @@
+   if (dict[@"accessibilityHint"]) {
+     self.accessibilityHint = dict[@"accessibilityHint"];
+   }
++#if !TARGET_OS_TV && RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++  NSNumber *glassEffectNum = dict[@"glassEffect"];
++  if (@available(iOS 26.0, *)) {
++    if ([glassEffectNum boolValue]) {
++      UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
++      configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++      UIBackgroundConfiguration *background = configuration.background;
++      background.strokeWidth = 0.0;
++      background.strokeColor = UIColor.clearColor;
++      configuration.background = background;
++      configuration.contentInsets = NSDirectionalEdgeInsetsZero;
++      if (title != nil) {
++        configuration.title = title;
++      }
++
++      UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
++      button.translatesAutoresizingMaskIntoConstraints = NO;
++      button.enabled = self.enabled;
++      button.accessibilityLabel = self.accessibilityLabel;
++      button.accessibilityHint = self.accessibilityHint;
++
++      CGFloat resolvedWidth = width != nil ? width.doubleValue : 56.0;
++      [button.widthAnchor constraintEqualToConstant:resolvedWidth].active = YES;
++      [button.heightAnchor constraintEqualToConstant:50.0].active = YES;
++
++      [[self class] resolveImageFromConfig:dict
++                               imageLoader:imageLoader
++                           completionBlock:^(UIImage *img) {
++                             UIButtonConfiguration *updatedConfiguration = button.configuration;
++                             updatedConfiguration.image = img;
++                             button.configuration = updatedConfiguration;
++                           }];
++
++      NSDictionary *menu = dict[@"menu"];
++      if (menu) {
++        button.menu = [[self class] initUIMenuWithDict:menu menuAction:menuAction imageLoader:imageLoader];
++        button.showsMenuAsPrimaryAction = YES;
++      } else {
++        NSString *buttonId = dict[@"buttonId"];
++        if (buttonId && action) {
++          UIAction *pressAction = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull sender) {
++            action(buttonId);
++          }];
++          [button addAction:pressAction forControlEvents:UIControlEventTouchUpInside];
++        }
++      }
++
++      self.customView = button;
++      return self;
++    }
++  }
++#endif
+ 
+ #if !TARGET_OS_TV || __TV_OS_VERSION_MAX_ALLOWED >= 170000
+   if (@available(tvOS 17.0, *)) {
+diff --git a/ios/legacy/RNSScreenStack.mm b/ios/legacy/RNSScreenStack.mm
+--- a/ios/legacy/RNSScreenStack.mm
++++ b/ios/legacy/RNSScreenStack.mm
+@@ -1076,6 +1076,15 @@
+   return scrollView.contentSize.width > scrollView.frame.size.width;
+ }
+ 
++// Whether a horizontally scrollable ScrollView is resting at its leading edge, so a
++// pan in the back-gesture direction has nothing left to scroll. Checked in the
++// ScrollView's own coordinate space: React Native mirrors the view for RTL layout,
++// which keeps the leading edge at the minimum content offset in both directions.
++- (BOOL)scrollViewIsAtLeadingEdge:(UIScrollView *)scrollView
++{
++  return scrollView.contentOffset.x <= -scrollView.adjustedContentInset.left + 1.0;
++}
++
+ // Custom method for compatibility with iOS < 13.4
+ // RNSScreenStackView is a UIGestureRecognizerDelegate for three types of gesture recognizers:
+ // RNSPanGestureRecognizer, RNSScreenEdgeGestureRecognizer, _UIParallaxTransitionPanGestureRecognizer
+@@ -1169,9 +1178,11 @@
+     if (gestureRecognizer == _controller.interactiveContentPopGestureRecognizer &&
+         [self isScrollViewPanGestureRecognizer:otherGestureRecognizer]) {
+       // ScrollView should take precedence when scrolling horizontally (it should be required to fail).
+-      // However, if it does not allow for horizontal scrolling, there should be no such restriction,
++      // However, if it does not allow for horizontal scrolling, or is already resting at its leading
++      // edge so a back swipe has nothing left to scroll, there should be no such restriction,
+       // and swiping horizontally should dismiss the screen.
+-      return [self scrollViewHasHorizontalPart:static_cast<UIScrollView *>(otherGestureRecognizer.view)];
++      UIScrollView *scrollView = static_cast<UIScrollView *>(otherGestureRecognizer.view);
++      return [self scrollViewHasHorizontalPart:scrollView] && ![self scrollViewIsAtLeadingEdge:scrollView];
+     }
+   }
+ 
+@@ -1191,6 +1202,15 @@
+     // gestureRecognizer:shouldRequireFailureOfGestureRecognizer
+     isEdgeSwipeGestureRecognizer =
+         isEdgeSwipeGestureRecognizer && gestureRecognizer != _controller.interactiveContentPopGestureRecognizer;
++
++    // The exception is a horizontal ScrollView resting at its leading edge: its pan recognizer would
++    // still begin (and merely bounce) on a back swipe, so it must yield to the pop gesture the same
++    // way plain content does.
++    if (gestureRecognizer == _controller.interactiveContentPopGestureRecognizer &&
++        [self isScrollViewPanGestureRecognizer:otherGestureRecognizer]) {
++      UIScrollView *scrollView = static_cast<UIScrollView *>(otherGestureRecognizer.view);
++      return [self scrollViewHasHorizontalPart:scrollView] && [self scrollViewIsAtLeadingEdge:scrollView];
++    }
+   }
+ #endif // check for iOS >= 26
+ 
+diff --git a/ios/legacy/RNSScreenStackHeaderConfig.h b/ios/legacy/RNSScreenStackHeaderConfig.h
+--- a/ios/legacy/RNSScreenStackHeaderConfig.h
++++ b/ios/legacy/RNSScreenStackHeaderConfig.h
+@@ -23,6 +23,8 @@
+ NS_ASSUME_NONNULL_BEGIN
+ 
+ @property (nonatomic, retain) NSString *title;
++@property (nonatomic, retain) NSString *subtitle;
++@property (nonatomic, retain) NSString *largeSubtitle;
+ @property (nonatomic, retain) NSString *titleFontFamily;
+ @property (nonatomic, retain) NSNumber *titleFontSize;
+ @property (nonatomic, retain) NSString *titleFontWeight;
+@@ -47,9 +49,12 @@
+ @property (nonatomic) BOOL backButtonInCustomView;
+ @property (nonatomic) UISemanticContentAttribute direction;
+ @property (nonatomic) UINavigationItemBackButtonDisplayMode backButtonDisplayMode;
++@property (nonatomic) NSInteger navigationItemStyle;
+ @property (nonatomic) RNSBlurEffectStyle blurEffect;
+ @property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerRightBarButtonItems;
+ @property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerLeftBarButtonItems;
++@property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerCenterBarButtonItems;
++@property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerToolbarItems;
+ @property (nonatomic, readwrite) BOOL synchronousShadowStateUpdatesEnabled;
+ 
+ NS_ASSUME_NONNULL_END
+diff --git a/ios/legacy/RNSScreenStackHeaderConfig.mm b/ios/legacy/RNSScreenStackHeaderConfig.mm
+--- a/ios/legacy/RNSScreenStackHeaderConfig.mm
++++ b/ios/legacy/RNSScreenStackHeaderConfig.mm
+@@ -24,10 +24,45 @@
+ #import "RNSSearchBar.h"
+ #import "UINavigationBar+RNSUtility.h"
+ 
++#import <objc/runtime.h>
++
+ namespace react = facebook::react;
+ 
+ static const NSNumber *const DEFAULT_TITLE_FONT_SIZE = @17;
++
++#if !TARGET_OS_TV
++// Each placement keeps its own cache so changes to one side do not move live
++// items on the other side into new groups during a navigation transition.
++static char RNSAppliedLeadingHeaderItemsKey;
++static char RNSAppliedTrailingHeaderItemsKey;
++static char RNSAppliedCenterHeaderItemsKey;
++
++// Records a placement's owner and contents, returning whether they changed.
++static BOOL RNSUpdateHeaderItemsCache(UINavigationItem *navitem, const void *key, NSArray *itemsKey)
++{
++  if ([objc_getAssociatedObject(navitem, key) isEqual:itemsKey]) {
++    return NO;
++  }
++  objc_setAssociatedObject(navitem, key, itemsKey, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++  return YES;
++}
++#endif
++static char RNSAppliedToolbarConfigsKey;
+ static const NSNumber *const DEFAULT_TITLE_LARGE_FONT_SIZE = @34;
++
++static NSInteger navigationItemStyleFromCppEquivalent(
++    react::RNSScreenStackHeaderConfigNavigationItemStyle navigationItemStyle)
++{
++  switch (navigationItemStyle) {
++    case react::RNSScreenStackHeaderConfigNavigationItemStyle::Browser:
++      return UINavigationItemStyleBrowser;
++    case react::RNSScreenStackHeaderConfigNavigationItemStyle::Editor:
++      return UINavigationItemStyleEditor;
++    case react::RNSScreenStackHeaderConfigNavigationItemStyle::Navigator:
++    default:
++      return UINavigationItemStyleNavigator;
++  }
++}
+ 
+ @interface RCTImageLoader (Private)
+ - (id<RCTImageCache>)imageCache;
+@@ -46,6 +81,9 @@
+ @end
+ 
+ @interface RNSScreenStackHeaderConfig () <RCTMountingTransactionObserving>
++#if !TARGET_OS_TV
++- (NSArray<UIBarButtonItemGroup *> *)barButtonItemGroupsFromItems:(NSArray<UIBarButtonItem *> *)items;
++#endif
+ @end
+ 
+ @implementation RNSScreenStackHeaderConfig {
+@@ -80,6 +118,7 @@
+   self.hidden = YES;
+   _reactSubviews = [NSMutableArray new];
+   _backTitleVisible = YES;
++  _navigationItemStyle = UINavigationItemStyleNavigator;
+   _blurEffect = RNSBlurEffectStyleNone;
+   _synchronousShadowStateUpdatesEnabled = YES;
+ }
+@@ -507,6 +546,10 @@
+ 
+   if (shouldHide) {
+     navitem.title = config.title;
++    if (@available(iOS 26.0, *)) {
++      navitem.subtitle = config.subtitle;
++      navitem.largeSubtitle = config.largeSubtitle;
++    }
+ 
+     // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items.
+     [navctr setNavigationBarHidden:YES animated:animated];
+@@ -523,11 +566,19 @@
+   }
+   navitem.largeTitleDisplayMode =
+       config.largeTitle ? UINavigationItemLargeTitleDisplayModeAlways : UINavigationItemLargeTitleDisplayModeNever;
++
++  if (@available(iOS 16.0, *)) {
++    navitem.style = (UINavigationItemStyle)config.navigationItemStyle;
++  }
+ #endif
+ 
+   UINavigationBarAppearance *appearance = [self buildAppearance:vc withConfig:config];
+   navitem.standardAppearance = appearance;
+   navitem.compactAppearance = appearance;
++  if (@available(iOS 26.0, *)) {
++    navitem.subtitle = config.subtitle;
++    navitem.largeSubtitle = config.largeSubtitle;
++  }
+ 
+ // appearance does not apply to the tvOS so we need to use lagacy customization
+ #if TARGET_OS_TV
+@@ -559,8 +610,6 @@
+   navitem.leftItemsSupplementBackButton = config.backButtonInCustomView;
+ #endif
+   navitem.titleView = nil;
+-  navitem.leftBarButtonItems = nil;
+-  navitem.rightBarButtonItems = nil;
+ 
+ #if !TARGET_OS_TV
+   // We want to set navitem.searchController to nil only if we are sure
+@@ -568,22 +617,18 @@
+   bool searchBarPresent = false;
+ #endif /* !TARGET_OS_TV */
+ 
++  NSMutableArray<UIBarButtonItem *> *subviewLeftItems = [NSMutableArray array];
++  NSMutableArray<UIBarButtonItem *> *subviewRightItems = [NSMutableArray array];
+   for (RNSScreenStackHeaderSubview *subview in config.reactSubviews) {
+     // This code should be kept in sync on Fabric with analogous switch statement in
+     // `- [RNSScreenStackHeaderConfig replaceNavigationBarViewsWithSnapshotOfSubview:]` method.
+     switch (subview.type) {
+       case RNSScreenStackHeaderSubviewTypeLeft: {
+-        NSArray<UIBarButtonItem *> *currentItems = navitem.leftBarButtonItems ?: @[];
+-        NSMutableArray<UIBarButtonItem *> *mutableItems = [currentItems mutableCopy];
+-        [mutableItems addObject:[subview getUIBarButtonItem]];
+-        navitem.leftBarButtonItems = mutableItems;
++        [subviewLeftItems addObject:[subview getUIBarButtonItem]];
+         break;
+       }
+       case RNSScreenStackHeaderSubviewTypeRight: {
+-        NSArray<UIBarButtonItem *> *currentItems = navitem.rightBarButtonItems ?: @[];
+-        NSMutableArray<UIBarButtonItem *> *mutableItems = [currentItems mutableCopy];
+-        [mutableItems addObject:[subview getUIBarButtonItem]];
+-        navitem.rightBarButtonItems = mutableItems;
++        [subviewRightItems addObject:[subview getUIBarButtonItem]];
+         break;
+       }
+       case RNSScreenStackHeaderSubviewTypeCenter:
+@@ -648,10 +693,470 @@
+   // This assignment should be done after `navitem.titleView = ...` assignment (iOS 16.0 bug).
+   // See: https://github.com/software-mansion/react-native-screens/issues/1570 (comments)
+   navitem.title = config.title;
+-  navitem.leftBarButtonItems = [config barButtonItemsFromConfigs:config.headerLeftBarButtonItems
+-                                                withCurrentItems:navitem.leftBarButtonItems];
+-  navitem.rightBarButtonItems = [config barButtonItemsFromConfigs:config.headerRightBarButtonItems
+-                                                 withCurrentItems:navitem.rightBarButtonItems];
++  // Retain the config in the key so its address cannot be reused while cached.
++  // Items capture this config's event emitter in their press handlers, so a
++  // remounted header-config view with value-equal configs must still rebuild
++  // instead of dispatching presses into the old config's emitter.
++  // getUIBarButtonItem is stable for the lifetime of its React header
++  // subview. Include those native identities in the key so React-backed
++  // items can use the same cache without reusing a group after its view was
++  // replaced.
++  // A bar button item can belong to only one group. Even if the item itself
++  // is reused, constructing a new group removes it from the old group that
++  // UIKit may still be animating. Preserve each unchanged placement's group,
++  // including the empty leading group beside the system back button.
++#if !TARGET_OS_TV
++  if (@available(iOS 16.0, *)) {
++    NSArray *headerLeftConfigs = config.headerLeftBarButtonItems ?: @[];
++    NSArray *headerRightConfigs = config.headerRightBarButtonItems ?: @[];
++    NSArray *headerCenterConfigs = config.headerCenterBarButtonItems ?: @[];
++    if (RNSUpdateHeaderItemsCache(
++            navitem, &RNSAppliedLeadingHeaderItemsKey, @[ config, headerLeftConfigs, subviewLeftItems ])) {
++      NSArray *items = [config barButtonItemsFromConfigs:config.headerLeftBarButtonItems
++                                      withCurrentItems:subviewLeftItems
++                                        navigationItem:navitem
++                              allowsSearchBarPlacement:NO];
++      navitem.leadingItemGroups = [config barButtonItemGroupsFromItems:items];
++    }
++    if (RNSUpdateHeaderItemsCache(
++            navitem, &RNSAppliedTrailingHeaderItemsKey, @[ config, headerRightConfigs, subviewRightItems ])) {
++      NSArray *items = [config barButtonItemsFromConfigs:config.headerRightBarButtonItems
++                                      withCurrentItems:subviewRightItems
++                                        navigationItem:navitem
++                              allowsSearchBarPlacement:NO];
++      navitem.trailingItemGroups = [config barButtonItemGroupsFromItems:items];
++    }
++    if (@available(iOS 26.0, *)) {
++      if (RNSUpdateHeaderItemsCache(navitem, &RNSAppliedCenterHeaderItemsKey, @[ config, headerCenterConfigs ])) {
++        NSArray *items = [config barButtonItemsFromConfigs:config.headerCenterBarButtonItems
++                                        withCurrentItems:@[]
++                                          navigationItem:navitem
++                                allowsSearchBarPlacement:NO];
++        navitem.centerItemGroups = [config barButtonItemGroupsFromItems:items];
++      }
++    }
++  } else
++#endif
++  {
++    NSArray<UIBarButtonItem *> *leftBarButtonItems = [config barButtonItemsFromConfigs:config.headerLeftBarButtonItems
++                                                                      withCurrentItems:subviewLeftItems
++                                                                        navigationItem:navitem
++                                                              allowsSearchBarPlacement:NO];
++    NSArray<UIBarButtonItem *> *rightBarButtonItems = [config barButtonItemsFromConfigs:config.headerRightBarButtonItems
++                                                                       withCurrentItems:subviewRightItems
++                                                                         navigationItem:navitem
++                                                               allowsSearchBarPlacement:NO];
++    navitem.leftBarButtonItems = leftBarButtonItems;
++    navitem.rightBarButtonItems = rightBarButtonItems;
++  }
++  NSDictionary<NSString *, id> *mailSearchToolbarConfig = nil;
++  NSMutableArray<NSDictionary<NSString *, id> *> *nonMailSearchToolbarConfigs = [NSMutableArray array];
++  for (NSDictionary<NSString *, id> *toolbarConfig in config.headerToolbarItems) {
++    if (toolbarConfig[@"mailSearchToolbar"]) {
++      if (mailSearchToolbarConfig == nil) {
++        mailSearchToolbarConfig = toolbarConfig;
++      }
++    } else {
++      [nonMailSearchToolbarConfigs addObject:toolbarConfig];
++    }
++  }
++  NSArray<NSDictionary<NSString *, id> *> *navigationToolbarConfigs = [nonMailSearchToolbarConfigs copy];
++  if (mailSearchToolbarConfig == nil) {
++    for (NSDictionary<NSString *, id> *rightConfig in config.headerRightBarButtonItems) {
++      if ([rightConfig[@"bottomMailSearchToolbar"] boolValue]) {
++        mailSearchToolbarConfig = rightConfig;
++        break;
++      }
++    }
++  }
++
++  static NSInteger const RNSMailSearchToolbarViewTag = 260628;
++  UIView *chromeHostView = vc.view;
++  UIView *existingMailSearchToolbar = [chromeHostView viewWithTag:RNSMailSearchToolbarViewTag];
++  if (existingMailSearchToolbar == nil) {
++    existingMailSearchToolbar = [vc.view viewWithTag:RNSMailSearchToolbarViewTag];
++  }
++  // Reuse the live toolbar when nothing it was built from changed: rebuilding
++  // replaces the fallback UISearchTextField with a fresh empty one, dropping
++  // the user's in-progress search text and first responder on every unrelated
++  // header update. Keyed on the config instance (the button/search blocks
++  // capture its event emitter), the toolbar config values, and the host width
++  // (the width constraint constant is resolved from it at build time).
++  static char RNSAppliedMailSearchToolbarConfigKey;
++  NSArray *mailSearchToolbarKey = mailSearchToolbarConfig != nil
++      ? @[ @((uintptr_t)config), mailSearchToolbarConfig, @(chromeHostView.bounds.size.width) ]
++      : nil;
++  BOOL reuseMailSearchToolbar = existingMailSearchToolbar != nil && mailSearchToolbarKey != nil &&
++      [objc_getAssociatedObject(existingMailSearchToolbar, &RNSAppliedMailSearchToolbarConfigKey)
++          isEqual:mailSearchToolbarKey];
++  if (!reuseMailSearchToolbar) {
++    [existingMailSearchToolbar removeFromSuperview];
++  }
++
++  if (mailSearchToolbarConfig != nil && !reuseMailSearchToolbar) {
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++    if (@available(iOS 26.0, *)) {
++      CGFloat horizontalInset = 18.0;
++      NSNumber *width = mailSearchToolbarConfig[@"width"];
++      CGFloat hostWidth = chromeHostView.bounds.size.width;
++      if (hostWidth <= 0.0) {
++        hostWidth = vc.view.bounds.size.width;
++      }
++      if (hostWidth <= 0.0) {
++        hostWidth = [UIScreen mainScreen].bounds.size.width;
++      }
++      CGFloat fallbackWidth = MIN(560.0, MAX(300.0, hostWidth - (horizontalInset * 2.0)));
++      CGFloat resolvedWidth = width != nil ? width.doubleValue : fallbackWidth;
++      if (hostWidth > 0.0) {
++        resolvedWidth = MIN(resolvedWidth, MAX(260.0, hostWidth - 12.0));
++      }
++
++      CGFloat toolbarHeight = 48.0;
++      CGFloat toolbarRadius = toolbarHeight / 2.0;
++      CGFloat buttonSize = toolbarHeight;
++      CGFloat sideButtonReserve = buttonSize + 8.0;
++      CGFloat searchFieldHeight = 42.0;
++      CGFloat toolbarBottomSpacing = 4.0;
++      UIFont *searchFont = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
++      NSDictionary<NSAttributedStringKey, id> *placeholderAttributes = @{
++        NSForegroundColorAttributeName : UIColor.secondaryLabelColor,
++        NSFontAttributeName : searchFont,
++      };
++      UIKeyboardLayoutGuide *keyboardLayoutGuide = chromeHostView.keyboardLayoutGuide;
++
++      UIView *toolbarHost = [[UIView alloc] init];
++      toolbarHost.tag = RNSMailSearchToolbarViewTag;
++      objc_setAssociatedObject(
++          toolbarHost,
++          &RNSAppliedMailSearchToolbarConfigKey,
++          mailSearchToolbarKey,
++          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++      toolbarHost.translatesAutoresizingMaskIntoConstraints = NO;
++      [chromeHostView addSubview:toolbarHost];
++      // The screen stays mounted beneath pushed routes, so its keyboard layout
++      // guide can track a keyboard owned by another screen. Keep the toolbar at
++      // rest unless its own search field is editing.
++      NSLayoutConstraint *keyboardAvoidConstraint =
++          [toolbarHost.bottomAnchor constraintEqualToAnchor:keyboardLayoutGuide.topAnchor
++                                                   constant:-toolbarBottomSpacing];
++      keyboardAvoidConstraint.priority = UILayoutPriorityDefaultLow;
++      NSLayoutConstraint *restingBottomConstraint =
++          [toolbarHost.bottomAnchor constraintEqualToAnchor:chromeHostView.safeAreaLayoutGuide.bottomAnchor
++                                                   constant:-toolbarBottomSpacing];
++      restingBottomConstraint.priority = UILayoutPriorityDefaultHigh;
++      [NSLayoutConstraint activateConstraints:@[
++        [toolbarHost.centerXAnchor constraintEqualToAnchor:chromeHostView.centerXAnchor],
++        [toolbarHost.bottomAnchor constraintLessThanOrEqualToAnchor:chromeHostView.safeAreaLayoutGuide.bottomAnchor
++                                                           constant:-toolbarBottomSpacing],
++        keyboardAvoidConstraint,
++        restingBottomConstraint,
++        [toolbarHost.widthAnchor constraintEqualToConstant:resolvedWidth],
++        [toolbarHost.heightAnchor constraintEqualToConstant:toolbarHeight],
++      ]];
++      [chromeHostView bringSubviewToFront:toolbarHost];
++
++      UIGlassEffect *glassEffect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
++      glassEffect.interactive = YES;
++      UIVisualEffectView *glassView = [[UIVisualEffectView alloc] initWithEffect:glassEffect];
++      glassView.clipsToBounds = YES;
++      glassView.layer.cornerRadius = toolbarRadius;
++      glassView.translatesAutoresizingMaskIntoConstraints = NO;
++      [toolbarHost addSubview:glassView];
++      BOOL hasFilterButton =
++          mailSearchToolbarConfig[@"filterButtonId"] != nil || mailSearchToolbarConfig[@"filterMenu"] != nil;
++      BOOL hasComposeButton =
++          mailSearchToolbarConfig[@"composeButtonId"] != nil || mailSearchToolbarConfig[@"composeMenu"] != nil;
++      CGFloat glassLeadingInset = hasFilterButton ? sideButtonReserve : 0.0;
++      CGFloat glassTrailingInset = hasComposeButton ? -sideButtonReserve : 0.0;
++      NSLayoutConstraint *glassLeadingConstraint =
++          [glassView.leadingAnchor constraintEqualToAnchor:toolbarHost.leadingAnchor constant:glassLeadingInset];
++      NSLayoutConstraint *glassTrailingConstraint =
++          [glassView.trailingAnchor constraintEqualToAnchor:toolbarHost.trailingAnchor constant:glassTrailingInset];
++      [NSLayoutConstraint activateConstraints:@[
++        glassLeadingConstraint,
++        glassTrailingConstraint,
++        [glassView.centerYAnchor constraintEqualToAnchor:toolbarHost.centerYAnchor],
++        [glassView.heightAnchor constraintEqualToConstant:toolbarHeight],
++      ]];
++
++      void (^emitButtonPress)(NSString *) = ^(NSString *buttonId) {
++        auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
++            config->_eventEmitter);
++        if (eventEmitter && buttonId) {
++          eventEmitter->onPressHeaderBarButtonItem(
++              facebook::react::RNSScreenStackHeaderConfigEventEmitter::OnPressHeaderBarButtonItem{
++                  .buttonId = std::string([buttonId UTF8String])});
++        }
++      };
++
++      void (^emitMenuPress)(NSString *) = ^(NSString *menuId) {
++        auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
++            config->_eventEmitter);
++        if (eventEmitter && menuId) {
++          eventEmitter->onPressHeaderBarButtonMenuItem(
++              facebook::react::RNSScreenStackHeaderConfigEventEmitter::OnPressHeaderBarButtonMenuItem{
++                  .menuId = std::string([menuId UTF8String])});
++        }
++      };
++
++      UIButton *(^makeGlassButton)(NSString *, NSString *, NSDictionary *) =
++          ^UIButton *(NSString *systemImageName, NSString *buttonId, NSDictionary *menuConfig) {
++        UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
++        configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++        configuration.image = [UIImage systemImageNamed:systemImageName ?: @"circle"];
++        configuration.baseForegroundColor = UIColor.labelColor;
++        UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
++        if (menuConfig != nil) {
++          button.menu = [RNSBarButtonItem initUIMenuWithDict:menuConfig
++                                                  menuAction:emitMenuPress
++                                                 imageLoader:config->_imageLoader];
++          button.showsMenuAsPrimaryAction = YES;
++        } else if (buttonId != nil) {
++          UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
++            emitButtonPress(buttonId);
++          }];
++          [button addAction:action forControlEvents:UIControlEventTouchUpInside];
++        }
++        return button;
++      };
++
++      BOOL useFallbackSearchField = [mailSearchToolbarConfig[@"useFallbackSearchField"] boolValue];
++      UISearchBar *searchBar =
++          !useFallbackSearchField && navitem.searchController != nil ? navitem.searchController.searchBar : nil;
++      NSString *placeholder = mailSearchToolbarConfig[@"placeholder"];
++      UITextField *resolvedSearchTextField = nil;
++      if (searchBar != nil) {
++        if (placeholder != nil) {
++          searchBar.placeholder = placeholder;
++        }
++        searchBar.hidden = NO;
++        searchBar.alpha = 1.0;
++        searchBar.userInteractionEnabled = YES;
++        searchBar.searchBarStyle = UISearchBarStyleMinimal;
++        searchBar.backgroundImage = [UIImage new];
++        searchBar.searchTextField.hidden = NO;
++        searchBar.searchTextField.alpha = 1.0;
++        searchBar.searchTextField.backgroundColor = UIColor.clearColor;
++        searchBar.searchTextField.font = searchFont;
++        searchBar.searchTextField.adjustsFontForContentSizeCategory = YES;
++        searchBar.searchTextField.textColor = UIColor.labelColor;
++        searchBar.searchTextField.tintColor = UIColor.labelColor;
++        resolvedSearchTextField = searchBar.searchTextField;
++        if (placeholder != nil) {
++          searchBar.searchTextField.attributedPlaceholder =
++              [[NSAttributedString alloc] initWithString:placeholder attributes:placeholderAttributes];
++        }
++        searchBar.translatesAutoresizingMaskIntoConstraints = NO;
++        [glassView.contentView addSubview:searchBar];
++        [NSLayoutConstraint activateConstraints:@[
++          [searchBar.leadingAnchor constraintEqualToAnchor:glassView.contentView.leadingAnchor constant:8.0],
++          [searchBar.trailingAnchor constraintEqualToAnchor:glassView.contentView.trailingAnchor constant:-8.0],
++          [searchBar.centerYAnchor constraintEqualToAnchor:glassView.contentView.centerYAnchor],
++          [searchBar.heightAnchor constraintEqualToConstant:searchFieldHeight],
++        ]];
++      } else {
++        UISearchTextField *searchField = [UISearchTextField new];
++        if (placeholder != nil) {
++          searchField.placeholder = placeholder;
++          searchField.attributedPlaceholder =
++              [[NSAttributedString alloc] initWithString:placeholder attributes:placeholderAttributes];
++        }
++        searchField.borderStyle = UITextBorderStyleNone;
++        searchField.font = searchFont;
++        searchField.adjustsFontForContentSizeCategory = YES;
++        searchField.textColor = UIColor.labelColor;
++        searchField.tintColor = UIColor.labelColor;
++        resolvedSearchTextField = searchField;
++        searchField.translatesAutoresizingMaskIntoConstraints = NO;
++        [glassView.contentView addSubview:searchField];
++        [NSLayoutConstraint activateConstraints:@[
++          [searchField.leadingAnchor constraintEqualToAnchor:glassView.contentView.leadingAnchor constant:14.0],
++          [searchField.trailingAnchor constraintEqualToAnchor:glassView.contentView.trailingAnchor constant:-14.0],
++          [searchField.centerYAnchor constraintEqualToAnchor:glassView.contentView.centerYAnchor],
++          [searchField.heightAnchor constraintEqualToConstant:searchFieldHeight],
++        ]];
++      }
++
++      NSString *searchTextChangeId = mailSearchToolbarConfig[@"searchTextChangeId"];
++      NSString *searchTextChangeActionIdentifier = @"org.react-native-screens.mail-search-toolbar.text-change";
++      if (resolvedSearchTextField != nil) {
++        [resolvedSearchTextField removeActionForIdentifier:searchTextChangeActionIdentifier
++                                          forControlEvents:UIControlEventEditingChanged];
++      }
++      if (searchTextChangeId != nil && resolvedSearchTextField != nil) {
++        [resolvedSearchTextField
++            addAction:[UIAction actionWithTitle:@""
++                                          image:nil
++                                     identifier:searchTextChangeActionIdentifier
++                                        handler:^(__kindof UIAction *_Nonnull action) {
++                                                  UITextField *field = (UITextField *)action.sender;
++                                                  emitButtonPress(
++                                                      [NSString stringWithFormat:@"%@:%@", searchTextChangeId, field.text ?: @""]);
++                                                }]
++            forControlEvents:UIControlEventEditingChanged];
++      }
++
++      UIButton *filterButton = nil;
++      if (hasFilterButton) {
++        filterButton = makeGlassButton(
++            mailSearchToolbarConfig[@"filterSystemImageName"] ?: @"line.3.horizontal.decrease",
++            mailSearchToolbarConfig[@"filterButtonId"],
++            mailSearchToolbarConfig[@"filterMenu"]);
++        filterButton.translatesAutoresizingMaskIntoConstraints = NO;
++        [toolbarHost addSubview:filterButton];
++        [NSLayoutConstraint activateConstraints:@[
++          [filterButton.leadingAnchor constraintEqualToAnchor:toolbarHost.leadingAnchor],
++          [filterButton.centerYAnchor constraintEqualToAnchor:toolbarHost.centerYAnchor],
++          [filterButton.widthAnchor constraintEqualToConstant:buttonSize],
++          [filterButton.heightAnchor constraintEqualToConstant:buttonSize],
++        ]];
++      }
++
++      UIButton *composeButton = nil;
++      if (hasComposeButton) {
++        composeButton = makeGlassButton(
++            mailSearchToolbarConfig[@"composeSystemImageName"] ?: @"square.and.pencil",
++            mailSearchToolbarConfig[@"composeButtonId"],
++            mailSearchToolbarConfig[@"composeMenu"]);
++        composeButton.translatesAutoresizingMaskIntoConstraints = NO;
++        [toolbarHost addSubview:composeButton];
++        [NSLayoutConstraint activateConstraints:@[
++          [composeButton.trailingAnchor constraintEqualToAnchor:toolbarHost.trailingAnchor],
++          [composeButton.centerYAnchor constraintEqualToAnchor:toolbarHost.centerYAnchor],
++          [composeButton.widthAnchor constraintEqualToConstant:buttonSize],
++          [composeButton.heightAnchor constraintEqualToConstant:buttonSize],
++        ]];
++      }
++
++      BOOL showsSearchDismissButton =
++          [mailSearchToolbarConfig[@"showsSearchDismissButton"] boolValue] && resolvedSearchTextField != nil;
++      UIButton *searchDismissButton = nil;
++      if (showsSearchDismissButton) {
++        searchDismissButton = makeGlassButton(@"xmark", nil, nil);
++        searchDismissButton.accessibilityLabel = @"Dismiss search keyboard";
++        searchDismissButton.alpha = 0.0;
++        searchDismissButton.hidden = YES;
++        searchDismissButton.translatesAutoresizingMaskIntoConstraints = NO;
++        [toolbarHost addSubview:searchDismissButton];
++        [NSLayoutConstraint activateConstraints:@[
++          [searchDismissButton.trailingAnchor constraintEqualToAnchor:toolbarHost.trailingAnchor],
++          [searchDismissButton.centerYAnchor constraintEqualToAnchor:toolbarHost.centerYAnchor],
++          [searchDismissButton.widthAnchor constraintEqualToConstant:buttonSize],
++          [searchDismissButton.heightAnchor constraintEqualToConstant:buttonSize],
++        ]];
++        __weak UITextField *weakSearchTextField = resolvedSearchTextField;
++        [searchDismissButton
++            addAction:[UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
++                        [weakSearchTextField resignFirstResponder];
++                      }]
++            forControlEvents:UIControlEventTouchUpInside];
++      }
++
++      __weak UIButton *weakFilterButton = filterButton;
++      __weak UIButton *weakComposeButton = composeButton;
++      __weak UIButton *weakSearchDismissButton = searchDismissButton;
++      __weak NSLayoutConstraint *weakGlassLeadingConstraint = glassLeadingConstraint;
++      __weak NSLayoutConstraint *weakGlassTrailingConstraint = glassTrailingConstraint;
++      __weak NSLayoutConstraint *weakKeyboardAvoidConstraint = keyboardAvoidConstraint;
++      __weak NSLayoutConstraint *weakRestingBottomConstraint = restingBottomConstraint;
++      __weak UIView *weakToolbarHost = toolbarHost;
++      __weak UITextField *weakSearchTextField = resolvedSearchTextField;
++      void (^setSearchEditingAppearance)(BOOL, BOOL) = ^(BOOL isEditing, BOOL animated) {
++        weakKeyboardAvoidConstraint.priority =
++            isEditing ? UILayoutPriorityDefaultHigh : UILayoutPriorityDefaultLow;
++        weakRestingBottomConstraint.priority =
++            isEditing ? UILayoutPriorityDefaultLow : UILayoutPriorityDefaultHigh;
++
++        if (showsSearchDismissButton) {
++          if (isEditing) {
++            weakSearchDismissButton.hidden = NO;
++          } else {
++            weakFilterButton.hidden = NO;
++            weakComposeButton.hidden = NO;
++          }
++          weakGlassLeadingConstraint.constant = isEditing ? 0.0 : glassLeadingInset;
++          weakGlassTrailingConstraint.constant = isEditing ? -sideButtonReserve : glassTrailingInset;
++
++          void (^changes)(void) = ^{
++            weakFilterButton.alpha = isEditing ? 0.0 : 1.0;
++            weakComposeButton.alpha = isEditing ? 0.0 : 1.0;
++            weakSearchDismissButton.alpha = isEditing ? 1.0 : 0.0;
++            [weakToolbarHost layoutIfNeeded];
++          };
++          void (^completion)(BOOL) = ^(BOOL finished) {
++            if (!finished || weakSearchTextField.isFirstResponder != isEditing) {
++              return;
++            }
++            weakFilterButton.hidden = isEditing;
++            weakComposeButton.hidden = isEditing;
++            weakSearchDismissButton.hidden = !isEditing;
++          };
++          if (animated) {
++            [UIView animateWithDuration:0.2
++                                  delay:0.0
++                                options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
++                             animations:changes
++                             completion:completion];
++          } else {
++            changes();
++            completion(YES);
++          }
++        }
++        [weakToolbarHost setNeedsLayout];
++      };
++
++      setSearchEditingAppearance(resolvedSearchTextField.isFirstResponder, NO);
++      NSString *beginActionIdentifier = @"org.react-native-screens.mail-search-toolbar.keyboard-begin";
++      NSString *endActionIdentifier = @"org.react-native-screens.mail-search-toolbar.keyboard-end";
++      [resolvedSearchTextField removeActionForIdentifier:beginActionIdentifier
++                                       forControlEvents:UIControlEventEditingDidBegin];
++      [resolvedSearchTextField removeActionForIdentifier:endActionIdentifier
++                                       forControlEvents:UIControlEventEditingDidEnd];
++      [resolvedSearchTextField
++          addAction:[UIAction actionWithTitle:@""
++                                        image:nil
++                                   identifier:beginActionIdentifier
++                                      handler:^(__kindof UIAction *_Nonnull action) {
++                                                setSearchEditingAppearance(YES, YES);
++                                              }]
++          forControlEvents:UIControlEventEditingDidBegin];
++      [resolvedSearchTextField
++          addAction:[UIAction actionWithTitle:@""
++                                        image:nil
++                                   identifier:endActionIdentifier
++                                      handler:^(__kindof UIAction *_Nonnull action) {
++                                                setSearchEditingAppearance(NO, YES);
++                                              }]
++          forControlEvents:UIControlEventEditingDidEnd];
++    }
++#endif
++  }
++
++  NSArray *toolbarConfigsKey = navigationToolbarConfigs ?: @[];
++  // Same reuse rule as the header item groups above (including the config
++  // identity — cached toolbar items capture this config's event emitter).
++  // The top-view-controller and hidden-state checks scope the skip to
++  // same-screen refreshes, so transitions between screens with different
++  // toolbars still reapply.
++  NSArray *toolbarCacheKey = @[ @((uintptr_t)config), toolbarConfigsKey ];
++  BOOL reuseToolbarItems = navctr.topViewController == vc &&
++      navctr.isToolbarHidden == (toolbarConfigsKey.count == 0) &&
++      [objc_getAssociatedObject(navitem, &RNSAppliedToolbarConfigsKey) isEqual:toolbarCacheKey];
++  if (!reuseToolbarItems) {
++    NSArray<UIBarButtonItem *> *toolbarItems = [config barButtonItemsFromConfigs:navigationToolbarConfigs
++                                                                 withCurrentItems:@[]
++                                                                   navigationItem:navitem
++                                                         allowsSearchBarPlacement:YES];
++    if (toolbarItems.count > 0) {
++      vc.toolbarItems = toolbarItems;
++      [navctr setToolbarHidden:NO animated:animated];
++    } else {
++      vc.toolbarItems = nil;
++      [navctr setToolbarHidden:YES animated:animated];
++    }
++    objc_setAssociatedObject(
++        navitem, &RNSAppliedToolbarConfigsKey, toolbarCacheKey, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++  }
+ 
+   // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items
+   // (setting nav bar visibility should be done after `navitem.*BarButtonItems`).
+@@ -784,6 +1289,8 @@
+ 
+ - (NSArray<UIBarButtonItem *> *)barButtonItemsFromConfigs:(NSArray<NSDictionary<NSString *, id> *> *)dicts
+                                          withCurrentItems:(NSArray<UIBarButtonItem *> *)currentItems
++                                           navigationItem:(UINavigationItem *)navitem
++                                 allowsSearchBarPlacement:(BOOL)allowsSearchBarPlacement
+ {
+   if (dicts.count == 0) {
+     return currentItems;
+@@ -792,7 +1299,200 @@
+   [items addObjectsFromArray:currentItems];
+   for (NSUInteger i = 0; i < dicts.count; i++) {
+     NSDictionary *dict = dicts[i];
+-    if (dict[@"buttonId"] || dict[@"menu"]) {
++    if (dict[@"mailSearchToolbar"]) {
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++      if (@available(iOS 26.0, *)) {
++        NSNumber *width = dict[@"width"];
++        CGFloat resolvedWidth = width != nil ? width.doubleValue : MAX(320.0, [UIScreen mainScreen].bounds.size.width - 56.0);
++        CGFloat resolvedHeight = 58.0;
++        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, resolvedWidth, resolvedHeight)];
++        container.translatesAutoresizingMaskIntoConstraints = NO;
++        [container.widthAnchor constraintEqualToConstant:resolvedWidth].active = YES;
++        [container.heightAnchor constraintEqualToConstant:resolvedHeight].active = YES;
++
++        UIStackView *stackView = [[UIStackView alloc] initWithFrame:container.bounds];
++        stackView.axis = UILayoutConstraintAxisHorizontal;
++        stackView.alignment = UIStackViewAlignmentCenter;
++        stackView.distribution = UIStackViewDistributionFill;
++        stackView.spacing = 10.0;
++        stackView.translatesAutoresizingMaskIntoConstraints = NO;
++        [container addSubview:stackView];
++        [NSLayoutConstraint activateConstraints:@[
++          [stackView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
++          [stackView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
++          [stackView.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
++          [stackView.heightAnchor constraintEqualToConstant:50.0],
++        ]];
++
++        void (^emitButtonPress)(NSString *) = ^(NSString *buttonId) {
++          auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
++              self->_eventEmitter);
++          if (eventEmitter && buttonId) {
++            eventEmitter->onPressHeaderBarButtonItem(
++                facebook::react::RNSScreenStackHeaderConfigEventEmitter::OnPressHeaderBarButtonItem{
++                    .buttonId = std::string([buttonId UTF8String])});
++          }
++        };
++
++        void (^emitMenuPress)(NSString *) = ^(NSString *menuId) {
++          auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
++              self->_eventEmitter);
++          if (eventEmitter && menuId) {
++            eventEmitter->onPressHeaderBarButtonMenuItem(
++                facebook::react::RNSScreenStackHeaderConfigEventEmitter::OnPressHeaderBarButtonMenuItem{
++                    .menuId = std::string([menuId UTF8String])});
++          }
++        };
++
++        UIButton *(^makeGlassButton)(NSString *, NSString *, NSDictionary *) =
++            ^UIButton *(NSString *systemImageName, NSString *buttonId, NSDictionary *menuConfig) {
++          UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
++          configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++          configuration.image = [UIImage systemImageNamed:systemImageName ?: @"circle"];
++
++          UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
++          button.translatesAutoresizingMaskIntoConstraints = NO;
++          [button.widthAnchor constraintEqualToConstant:58.0].active = YES;
++          [button.heightAnchor constraintEqualToConstant:50.0].active = YES;
++          if (menuConfig != nil) {
++            button.menu = [RNSBarButtonItem initUIMenuWithDict:menuConfig
++                                                    menuAction:emitMenuPress
++                                                   imageLoader:self->_imageLoader];
++            button.showsMenuAsPrimaryAction = YES;
++          } else if (buttonId != nil) {
++            UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
++              emitButtonPress(buttonId);
++            }];
++            [button addAction:action forControlEvents:UIControlEventTouchUpInside];
++          }
++          return button;
++        };
++
++        BOOL hasFilterButton = dict[@"filterButtonId"] != nil || dict[@"filterMenu"] != nil;
++        BOOL hasComposeButton = dict[@"composeButtonId"] != nil || dict[@"composeMenu"] != nil;
++
++        if (hasFilterButton) {
++          UIButton *filterButton = makeGlassButton(
++              dict[@"filterSystemImageName"] ?: @"line.3.horizontal.decrease",
++              dict[@"filterButtonId"],
++              dict[@"filterMenu"]);
++          [stackView addArrangedSubview:filterButton];
++        }
++
++        UISearchBar *searchBar = navitem.searchController != nil ? navitem.searchController.searchBar : [UISearchBar new];
++        NSString *placeholder = dict[@"placeholder"];
++        if (placeholder != nil) {
++          searchBar.placeholder = placeholder;
++        }
++        searchBar.searchBarStyle = UISearchBarStyleMinimal;
++        searchBar.translatesAutoresizingMaskIntoConstraints = NO;
++        [searchBar.heightAnchor constraintEqualToConstant:50.0].active = YES;
++        [stackView addArrangedSubview:searchBar];
++
++        if (hasComposeButton) {
++          UIButton *composeButton = makeGlassButton(
++              dict[@"composeSystemImageName"] ?: @"square.and.pencil",
++              dict[@"composeButtonId"],
++              dict[@"composeMenu"]);
++          [stackView addArrangedSubview:composeButton];
++        }
++
++        UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithCustomView:container];
++        [items addObject:item];
++      }
++#endif
++    } else if (dict[@"searchField"]) {
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++      if (@available(iOS 26.0, *)) {
++        NSNumber *width = dict[@"width"];
++        CGFloat resolvedWidth = width != nil ? width.doubleValue : 280.0;
++        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, resolvedWidth, 44.0)];
++        container.translatesAutoresizingMaskIntoConstraints = NO;
++        [container.widthAnchor constraintEqualToConstant:resolvedWidth].active = YES;
++        [container.heightAnchor constraintEqualToConstant:44.0].active = YES;
++
++        UISearchTextField *searchField = [UISearchTextField new];
++        NSString *placeholder = dict[@"placeholder"];
++        if (placeholder != nil) {
++          searchField.placeholder = placeholder;
++        }
++        searchField.translatesAutoresizingMaskIntoConstraints = NO;
++        [container addSubview:searchField];
++        [NSLayoutConstraint activateConstraints:@[
++          [searchField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
++          [searchField.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
++          [searchField.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
++          [searchField.heightAnchor constraintEqualToConstant:40.0],
++        ]];
++
++        UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithCustomView:container];
++        [items addObject:item];
++      }
++#endif
++    } else if (dict[@"searchBarPlacement"]) {
++      if (!allowsSearchBarPlacement) {
++        continue;
++      }
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++      if (@available(iOS 26.0, *)) {
++        NSNumber *width = dict[@"width"];
++        UIBarButtonItem *item = nil;
++        if ([dict[@"activatesSearchController"] boolValue]) {
++          UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
++          configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++          configuration.image = [UIImage systemImageNamed:@"magnifyingglass"];
++          configuration.baseForegroundColor = UIColor.labelColor;
++          UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
++          button.translatesAutoresizingMaskIntoConstraints = NO;
++          [button.widthAnchor constraintEqualToConstant:56.0].active = YES;
++          [button.heightAnchor constraintEqualToConstant:56.0].active = YES;
++          UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
++            if (navitem.searchController != nil) {
++              [navitem.searchController setActive:YES];
++              [navitem.searchController.searchBar becomeFirstResponder];
++            }
++          }];
++          [button addAction:action forControlEvents:UIControlEventTouchUpInside];
++          item = [[UIBarButtonItem alloc] initWithCustomView:button];
++        } else if ([dict[@"customView"] boolValue] && navitem.searchController != nil) {
++          UISearchBar *searchBar = navitem.searchController.searchBar;
++          CGFloat resolvedWidth = width != nil ? width.doubleValue : searchBar.frame.size.width;
++          CGFloat resolvedHeight = searchBar.frame.size.height > 0 ? searchBar.frame.size.height : 44.0;
++          UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, resolvedWidth, resolvedHeight)];
++          container.translatesAutoresizingMaskIntoConstraints = NO;
++          [container.widthAnchor constraintEqualToConstant:resolvedWidth].active = YES;
++          [container.heightAnchor constraintEqualToConstant:resolvedHeight].active = YES;
++          searchBar.frame = container.bounds;
++          searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++          [container addSubview:searchBar];
++          item = [[UIBarButtonItem alloc] initWithCustomView:container];
++        } else {
++          item = navitem.searchBarPlacementBarButtonItem;
++          if (width != nil) {
++            item.width = width.doubleValue;
++          }
++        }
++        NSNumber *index = dict[@"index"];
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++        if (@available(iOS 26.0, *)) {
++          NSNumber *sharesBackground = dict[@"sharesBackground"];
++          if (sharesBackground != nil) {
++            item.sharesBackground = sharesBackground.boolValue;
++          }
++          NSNumber *hidesSharedBackground = dict[@"hidesSharedBackground"];
++          if (hidesSharedBackground != nil) {
++            item.hidesSharedBackground = hidesSharedBackground.boolValue;
++          }
++        }
++#endif
++        if (index != nil && index.integerValue >= 0 && index.integerValue < items.count) {
++          [items insertObject:item atIndex:index.integerValue];
++        } else {
++          [items addObject:item];
++        }
++      }
++#endif
++    } else if (dict[@"buttonId"] || dict[@"menu"]) {
+       RNSBarButtonItem *item = [[RNSBarButtonItem alloc] initWithConfig:dict
+           action:^(NSString *buttonId) {
+             auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
+@@ -814,19 +1514,23 @@
+           }
+           imageLoader:_imageLoader];
+       NSNumber *index = dict[@"index"];
+-      if (index.integerValue < items.count) {
++      if (index != nil && index.integerValue >= 0 && index.integerValue < items.count) {
+         [items insertObject:item atIndex:index.integerValue];
+       } else {
+         [items addObject:item];
+       }
+     } else if (dict[@"spacing"]) {
+-      UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFixedSpace
+-                                                                            target:nil
+-                                                                            action:nil];
++      BOOL flexible = [dict[@"flexible"] boolValue];
++      UIBarButtonItem *item = [[UIBarButtonItem alloc]
++          initWithBarButtonSystemItem:(flexible ? UIBarButtonSystemItemFlexibleSpace : UIBarButtonSystemItemFixedSpace)
++                                target:nil
++                                action:nil];
+       NSNumber *spacingValue = dict[@"spacing"];
+-      item.width = [spacingValue doubleValue];
++      if (!flexible) {
++        item.width = [spacingValue doubleValue];
++      }
+       NSNumber *index = dict[@"index"];
+-      if (index.integerValue < items.count) {
++      if (index != nil && index.integerValue >= 0 && index.integerValue < items.count) {
+         [items insertObject:item atIndex:index.integerValue];
+       } else {
+         [items addObject:item];
+@@ -835,6 +1539,47 @@
+   }
+   return items;
+ }
++
++#if !TARGET_OS_TV
++- (NSArray<UIBarButtonItemGroup *> *)barButtonItemGroupsFromItems:(NSArray<UIBarButtonItem *> *)items
++{
++  if (items.count == 0) {
++    return @[];
++  }
++
++  NSMutableArray<UIBarButtonItemGroup *> *groups = [NSMutableArray array];
++  NSMutableArray<UIBarButtonItem *> *sharedRun = [NSMutableArray array];
++
++  void (^flushSharedRun)(void) = ^{
++    if (sharedRun.count == 0) {
++      return;
++    }
++    [groups addObject:[UIBarButtonItemGroup fixedGroupWithRepresentativeItem:nil
++                                                                       items:[sharedRun copy]]];
++    [sharedRun removeAllObjects];
++  };
++
++  for (UIBarButtonItem *item in items) {
++    BOOL shouldShareBackground = NO;
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++    if (@available(iOS 26.0, *)) {
++      shouldShareBackground = item.sharesBackground && !item.hidesSharedBackground;
++    }
++#endif
++
++    if (shouldShareBackground) {
++      [sharedRun addObject:item];
++      continue;
++    }
++
++    flushSharedRun();
++    [groups addObject:[UIBarButtonItemGroup fixedGroupWithRepresentativeItem:nil items:@[ item ]]];
++  }
++
++  flushSharedRun();
++  return groups;
++}
++#endif
+ 
+ RNS_IGNORE_SUPER_CALL_BEGIN
+ - (void)insertReactSubview:(RNSScreenStackHeaderSubview *)subview atIndex:(NSInteger)atIndex
+@@ -1025,6 +1770,8 @@
+   }
+ 
+   _title = RCTNSStringFromStringNilIfEmpty(newScreenProps.title);
++  _subtitle = RCTNSStringFromStringNilIfEmpty(newScreenProps.subtitle);
++  _largeSubtitle = RCTNSStringFromStringNilIfEmpty(newScreenProps.largeSubtitle);
+   if (newScreenProps.titleFontFamily != oldScreenProps.titleFontFamily) {
+     _titleFontFamily = RCTNSStringFromStringNilIfEmpty(newScreenProps.titleFontFamily);
+   }
+@@ -1050,6 +1797,7 @@
+   _disableBackButtonMenu = newScreenProps.disableBackButtonMenu;
+   _backButtonDisplayMode =
+       [RNSConvert UINavigationItemBackButtonDisplayModeFromCppEquivalent:newScreenProps.backButtonDisplayMode];
++  _navigationItemStyle = navigationItemStyleFromCppEquivalent(newScreenProps.navigationItemStyle);
+ 
+   if (newScreenProps.userInterfaceStyle != oldScreenProps.userInterfaceStyle) {
+     _userInterfaceStyle = [RNSConvert UIUserInterfaceStyleFromCppEquivalent:newScreenProps.userInterfaceStyle];
+@@ -1096,6 +1844,30 @@
+     _headerRightBarButtonItems = array;
+   }
+ 
++  if (newScreenProps.headerCenterBarButtonItems != oldScreenProps.headerCenterBarButtonItems) {
++    const auto &vec = newScreenProps.headerCenterBarButtonItems;
++    NSMutableArray<NSDictionary<NSString *, id> *> *array = [NSMutableArray arrayWithCapacity:vec.size()];
++    for (const auto &item : vec) {
++      NSDictionary *dict = [RNSConvert idFromFollyDynamic:item];
++      if ([dict isKindOfClass:[NSDictionary class]]) {
++        [array addObject:dict];
++      }
++    }
++    _headerCenterBarButtonItems = array;
++  }
++
++  if (newScreenProps.headerToolbarItems != oldScreenProps.headerToolbarItems) {
++    const auto &vec = newScreenProps.headerToolbarItems;
++    NSMutableArray<NSDictionary<NSString *, id> *> *array = [NSMutableArray arrayWithCapacity:vec.size()];
++    for (const auto &item : vec) {
++      NSDictionary *dict = [RNSConvert idFromFollyDynamic:item];
++      if ([dict isKindOfClass:[NSDictionary class]]) {
++        [array addObject:dict];
++      }
++    }
++    _headerToolbarItems = array;
++  }
++
+   [self updateViewControllerIfNeeded];
+ 
+   if (needsNavigationControllerLayout) {
+diff --git a/ios/legacy/RNSScreenStackHeaderSubview.mm b/ios/legacy/RNSScreenStackHeaderSubview.mm
+--- a/ios/legacy/RNSScreenStackHeaderSubview.mm
++++ b/ios/legacy/RNSScreenStackHeaderSubview.mm
+@@ -20,7 +20,9 @@
+   // This is a strong reference to UIBarButtonItem which creates a retain cycle.
+   // The cycle is cleared via `invalidateUIBarButtonItem` method, called by `invalidate` callback.
+   UIBarButtonItem *_barButtonItem;
++  NSString *_barButtonItemIdentifier;
+   BOOL _hidesSharedBackground;
++  UILabel *_titleScrollEdgeEffectGuide;
+ }
+ 
+ #pragma mark - Common
+@@ -102,6 +104,25 @@
+ - (void)layoutSubviews
+ {
+   [super layoutSubviews];
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++  if (@available(iOS 26.0, *)) {
++    if (_type == RNSScreenStackHeaderSubviewTypeTitle || _type == RNSScreenStackHeaderSubviewTypeCenter) {
++      // UIKit shapes the navigation bar's scroll-edge fade around native labels,
++      // but does not recognize Fabric's custom text views. An empty, non-interactive
++      // label supplies the title's geometry without drawing or becoming a bar item.
++      if (_titleScrollEdgeEffectGuide == nil) {
++        _titleScrollEdgeEffectGuide = [UILabel new];
++        _titleScrollEdgeEffectGuide.accessibilityElementsHidden = YES;
++        // Append after Fabric's children so their mount/unmount indices stay intact.
++        [self addSubview:_titleScrollEdgeEffectGuide];
++      }
++      _titleScrollEdgeEffectGuide.frame = self.bounds;
++    } else {
++      [_titleScrollEdgeEffectGuide removeFromSuperview];
++      _titleScrollEdgeEffectGuide = nil;
++    }
++  }
++#endif
+   [self updateShadowStateInContextOfAncestorView:[self findNavigationBar]];
+ }
+ 
+@@ -124,6 +145,7 @@
+   const auto &newHeaderSubviewProps = *std::static_pointer_cast<const react::RNSScreenStackHeaderSubviewProps>(props);
+ 
+   [self setType:[RNSConvert RNSScreenStackHeaderSubviewTypeFromCppEquivalent:newHeaderSubviewProps.type]];
++  [self setBarButtonItemIdentifier:RCTNSStringFromStringNilIfEmpty(newHeaderSubviewProps.identifier)];
+   [self setHidesSharedBackground:newHeaderSubviewProps.hidesSharedBackground];
+   [self setSynchronousShadowStateUpdatesEnabled:newHeaderSubviewProps.synchronousShadowStateUpdatesEnabled];
+   [super updateProps:props oldProps:oldProps];
+@@ -276,7 +298,14 @@
+ #if RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
+   if (@available(iOS 26.0, *)) {
+     if (_barButtonItem != nil) {
+-      [_barButtonItem setHidesSharedBackground:_hidesSharedBackground];
++      NSString *currentIdentifier = _barButtonItem.identifier;
++      if (currentIdentifier != _barButtonItemIdentifier &&
++          ![currentIdentifier isEqualToString:_barButtonItemIdentifier]) {
++        _barButtonItem.identifier = _barButtonItemIdentifier;
++      }
++      if (_barButtonItem.hidesSharedBackground != _hidesSharedBackground) {
++        _barButtonItem.hidesSharedBackground = _hidesSharedBackground;
++      }
+     }
+   }
+ #endif // RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
+@@ -284,7 +313,19 @@
+ 
+ - (void)setHidesSharedBackground:(BOOL)hidesSharedBackground
+ {
++  if (_hidesSharedBackground == hidesSharedBackground) {
++    return;
++  }
+   _hidesSharedBackground = hidesSharedBackground;
++  [self configureBarButtonItem];
++}
++
++- (void)setBarButtonItemIdentifier:(nullable NSString *)identifier
++{
++  if (_barButtonItemIdentifier == identifier || [_barButtonItemIdentifier isEqualToString:identifier]) {
++    return;
++  }
++  _barButtonItemIdentifier = [identifier copy];
+   [self configureBarButtonItem];
+ }
+ 
+diff --git a/ios/split/RNSSplitAppearanceApplicator.mm b/ios/split/RNSSplitAppearanceApplicator.mm
+--- a/ios/split/RNSSplitAppearanceApplicator.mm
++++ b/ios/split/RNSSplitAppearanceApplicator.mm
+@@ -164,7 +164,32 @@
+ - (void)updateSplitViewDisplayModeFor:(id<RNSSplitHostAppearanceProvider>)provider
+                        withController:(RNSSplitHostController *)splitHostController
+ {
+-  splitHostController.preferredDisplayMode = provider.preferredDisplayMode;
++  const auto preferredDisplayMode = provider.preferredDisplayMode;
++  if (splitHostController.preferredDisplayMode == preferredDisplayMode) {
++    return;
++  }
++
++  UIView *view = splitHostController.viewIfLoaded;
++  // Animate an already displayed split; initial configuration and compact
++  // column navigation must not start a sidebar transition.
++  const BOOL shouldAnimate = view.window != nil && !splitHostController.isCollapsed &&
++      splitHostController.preferredDisplayMode != UISplitViewControllerDisplayModeAutomatic &&
++      !UIAccessibilityIsReduceMotionEnabled();
++  if (!shouldAnimate) {
++    splitHostController.preferredDisplayMode = preferredDisplayMode;
++    return;
++  }
++
++  [view layoutIfNeeded];
++  [UIView animateWithDuration:0.35
++                        delay:0
++                      options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction |
++                          UIViewAnimationOptionCurveEaseInOut
++                   animations:^{
++                     splitHostController.preferredDisplayMode = preferredDisplayMode;
++                     [view layoutIfNeeded];
++                   }
++                   completion:nil];
+ }
+ 
+ - (void)validateColumnConstraintsWithMinWidth:(CGFloat)minWidth maxWidth:(CGFloat)maxWidth
+diff --git a/ios/split/RNSSplitColumnController.mm b/ios/split/RNSSplitColumnController.mm
+--- a/ios/split/RNSSplitColumnController.mm
++++ b/ios/split/RNSSplitColumnController.mm
+@@ -22,6 +22,7 @@
+ {
+   if (self = [super init]) {
+     _navigationController = [RNSStackNavigationController new];
++    _navigationController.allowsEmptyStack = YES;
+     _operationCoordinator = [RNSStackOperationCoordinator new];
+     _renderedScreens = [NSMutableArray new];
+     // The view must exist to observe its frame; it is loaded before the Split installs it in a column anyway.
+diff --git a/ios/split/RNSSplitHostController.mm b/ios/split/RNSSplitHostController.mm
+--- a/ios/split/RNSSplitHostController.mm
++++ b/ios/split/RNSSplitHostController.mm
+@@ -141,8 +141,8 @@
+ }
+ 
+ /**
+- * @brief Installs the navigation controllers of the columns in the Split once every column has its first screen;
+- * afterwards the columns live for the host's lifetime and only their stacks change.
++ * @brief Installs the navigation controllers once and keeps them alive for the host's lifetime.
++ * A detail column can be empty while the compact presentation shows only the primary list.
+  */
+ - (void)installColumnsIfNeeded
+ {
+@@ -150,9 +150,6 @@
+     NSMutableArray<UIViewController *> *navigationControllers =
+         [NSMutableArray arrayWithCapacity:_columnControllers.count];
+     for (RNSSplitColumnController *columnController in _columnControllers) {
+-      if (columnController.navigationController.viewControllers.count == 0) {
+-        return;
+-      }
+       [navigationControllers addObject:columnController.navigationController];
+     }
+     self.viewControllers = navigationControllers;
+@@ -270,7 +267,7 @@
+ - (void)reactMountingTransactionDidMount
+ {
+   [self flushPendingColumnUpdates];
+-  RCTAssert(_columnsInstalled, @"[RNScreens] Every column of the Split must have a screen");
++  RCTAssert(_columnsInstalled, @"[RNScreens] Split column controllers must be installed");
+   [self updateSplitAppearanceIfNeeded];
+ }
+ 
+@@ -306,8 +303,9 @@
+               NSStringFromClass(viewController.class));
+ 
+     UIViewController *maybeSplitScreenController = navigationController.topViewController;
+-    RCTAssert(
+-        maybeSplitScreenController != nil, @"[RNScreens] RNSSplitScreenController is nil for column %ld", (long)column);
++    if (maybeSplitScreenController == nil) {
++      continue;
++    }
+     RCTAssert([maybeSplitScreenController isKindOfClass:RNSSplitScreenController.class],
+               @"[RNScreens] Expected RNSSplitScreenController but got %@",
+               NSStringFromClass(maybeSplitScreenController.class));
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -18,14 +18,13 @@
+     "lint-js": "eslint --ext '.js,.ts,.tsx' --fix src",
+     "lint-android": "./android/gradlew -p android spotlessCheck -q",
+     "lint": "yarn lint-js && yarn lint-android",
+-    "release": "yarn prepare && npm login && release-it",
+-    "prepare": "bob build && husky install"
++    "release": "yarn prepare && npm login && release-it"
+   },
+   "main": "lib/commonjs/index",
+   "module": "lib/module/index",
+   "react-native": "src/index",
+   "source": "src/index",
+-  "types": "lib/typescript/index.d.ts",
++  "types": "src/index.tsx",
+   "files": [
+     "src/",
+     "common/",
+diff --git a/src/components/stack/header/StackHeaderConfig.ios.tsx b/src/components/stack/header/StackHeaderConfig.ios.tsx
+--- a/src/components/stack/header/StackHeaderConfig.ios.tsx
++++ b/src/components/stack/header/StackHeaderConfig.ios.tsx
+@@ -45,7 +45,7 @@
+ ) {
+   // android props are safely dropped
+   // eslint-disable-next-line @typescript-eslint/no-unused-vars
+-  const { ios, android, ...restProps } = props;
++  const { ios, android, searchBar, ...restProps } = props;
+ 
+   const {
+     leadingItems,
+@@ -172,6 +172,7 @@
+       style={styles.config}
+       onMenuItemPress={handleMenuItemPress}
+       onMenuSelectionChange={handleSelectionChange}>
++      {searchBar}
+       {leadingItems?.map(item => makeItemViewFromItem(item, 'leading'))}
+       {titleItem && makeItemViewFromItem(titleItem, 'title')}
+       {subtitleItem && makeItemViewFromItem(subtitleItem, 'subtitle')}
+diff --git a/src/components/stack/header/StackHeaderConfig.ios.types.ts b/src/components/stack/header/StackHeaderConfig.ios.types.ts
+--- a/src/components/stack/header/StackHeaderConfig.ios.types.ts
++++ b/src/components/stack/header/StackHeaderConfig.ios.types.ts
+@@ -61,6 +61,7 @@
+ }
+ 
+ export interface StackHeaderBaseItemIOS {
++  axisBehavior?: 'automatic' | 'horizontalOnly' | 'verticalPreferred' | undefined;
+   /**
+    * @summary A unique identifier within the screen header.
+    *
+diff --git a/src/components/stack/header/StackHeaderConfig.types.ts b/src/components/stack/header/StackHeaderConfig.types.ts
+--- a/src/components/stack/header/StackHeaderConfig.types.ts
++++ b/src/components/stack/header/StackHeaderConfig.types.ts
+@@ -1,9 +1,12 @@
++import type { ReactElement } from 'react';
+ import type { StackHeaderConfigCommandsAndroid } from './StackHeaderConfig.android.types';
+ import { StackHeaderConfigPropsAndroid } from './StackHeaderConfig.android.types';
+ import type { StackHeaderConfigCommandsIOS } from './StackHeaderConfig.ios.types';
+ import { StackHeaderConfigPropsIOS } from './StackHeaderConfig.ios.types';
+ 
+ export interface StackHeaderConfigPropsBase {
++  searchBar?: ReactElement | undefined;
++  editorStyle?: boolean | undefined;
+   /**
+    * @summary Title displayed in the header.
+    *
+diff --git a/src/components/stack/header/ios/StackHeaderItem.ios.types.ts b/src/components/stack/header/ios/StackHeaderItem.ios.types.ts
+--- a/src/components/stack/header/ios/StackHeaderItem.ios.types.ts
++++ b/src/components/stack/header/ios/StackHeaderItem.ios.types.ts
+@@ -10,6 +10,7 @@
+   | 'largeSubtitle';
+ 
+ export type StackHeaderItemProps = {
++  axisBehavior?: 'automatic' | 'horizontalOnly' | 'verticalPreferred' | undefined;
+   placement: StackHeaderItemPlacement;
+   itemId?: string | undefined;
+   identifier?: string | undefined;
+diff --git a/src/fabric/header/HeaderConfigIOSNativeComponent.ts b/src/fabric/header/HeaderConfigIOSNativeComponent.ts
+--- a/src/fabric/header/HeaderConfigIOSNativeComponent.ts
++++ b/src/fabric/header/HeaderConfigIOSNativeComponent.ts
+@@ -43,6 +43,7 @@
+ }>;
+ 
+ export interface NativeProps extends ViewProps {
++  editorStyle?: CT.WithDefault<boolean, false>;
+   title?: string | undefined;
+   subtitle?: string | undefined;
+   hidden?: CT.WithDefault<boolean, false>;
+diff --git a/src/fabric/header/HeaderItemIOSNativeComponent.ts b/src/fabric/header/HeaderItemIOSNativeComponent.ts
+--- a/src/fabric/header/HeaderItemIOSNativeComponent.ts
++++ b/src/fabric/header/HeaderItemIOSNativeComponent.ts
+@@ -68,6 +68,7 @@
+   | PlatformIconShared;
+ 
+ export interface NativeProps extends ViewProps {
++  axisBehavior?: CT.WithDefault<'automatic' | 'horizontalOnly' | 'verticalPreferred', 'automatic'>;
+   placement?: CT.WithDefault<Placement, 'trailing'>;
+   itemId?: string | undefined;
+   identifier?: string | undefined;
+diff --git a/src/fabric/legacy/ScreenStackHeaderConfigNativeComponent.ts b/src/fabric/legacy/ScreenStackHeaderConfigNativeComponent.ts
+--- a/src/fabric/legacy/ScreenStackHeaderConfigNativeComponent.ts
++++ b/src/fabric/legacy/ScreenStackHeaderConfigNativeComponent.ts
+@@ -19,6 +19,7 @@
+ type OnPressHeaderBarButtonMenuItemEvent = Readonly<{ menuId: string }>;
+ 
+ type BackButtonDisplayMode = 'minimal' | 'default' | 'generic';
++type NavigationItemStyle = 'navigator' | 'browser' | 'editor';
+ 
+ type BlurEffect =
+   | 'none'
+@@ -66,12 +67,15 @@
+   largeTitleColor?: ColorValue | undefined;
+   translucent?: boolean | undefined;
+   title?: string | undefined;
++  subtitle?: string | undefined;
++  largeSubtitle?: string | undefined;
+   titleFontFamily?: string | undefined;
+   titleFontSize?: CT.Int32 | undefined;
+   titleFontWeight?: string | undefined;
+   titleColor?: ColorValue | undefined;
+   disableBackButtonMenu?: boolean | undefined;
+   backButtonDisplayMode?: CT.WithDefault<BackButtonDisplayMode, 'default'>;
++  navigationItemStyle?: CT.WithDefault<NavigationItemStyle, 'navigator'>;
+   hideBackButton?: boolean | undefined;
+   backButtonInCustomView?: boolean | undefined;
+   blurEffect?: CT.WithDefault<BlurEffect, 'none'>;
+@@ -79,6 +83,8 @@
+   topInsetEnabled?: boolean | undefined;
+   headerLeftBarButtonItems?: CT.UnsafeMixed[] | undefined;
+   headerRightBarButtonItems?: CT.UnsafeMixed[] | undefined;
++  headerCenterBarButtonItems?: CT.UnsafeMixed[] | undefined;
++  headerToolbarItems?: CT.UnsafeMixed[] | undefined;
+   onPressHeaderBarButtonItem?:
+     | CT.DirectEventHandler<OnPressHeaderBarButtonItemEvent>
+     | undefined;
+diff --git a/src/fabric/legacy/ScreenStackHeaderSubviewNativeComponent.ts b/src/fabric/legacy/ScreenStackHeaderSubviewNativeComponent.ts
+--- a/src/fabric/legacy/ScreenStackHeaderSubviewNativeComponent.ts
++++ b/src/fabric/legacy/ScreenStackHeaderSubviewNativeComponent.ts
+@@ -18,6 +18,7 @@
+ export interface NativeProps extends ViewProps {
+   type?: CT.WithDefault<HeaderSubviewTypes, 'left'>;
+   hidesSharedBackground?: boolean | undefined;
++  identifier?: string | undefined;
+   synchronousShadowStateUpdatesEnabled?: CT.WithDefault<boolean, true>;
+ }
+ 
+diff --git a/src/legacy/components/ScreenStackHeaderConfig.tsx b/src/legacy/components/ScreenStackHeaderConfig.tsx
+--- a/src/legacy/components/ScreenStackHeaderConfig.tsx
++++ b/src/legacy/components/ScreenStackHeaderConfig.tsx
+@@ -54,7 +54,12 @@
+     props.disableBottomInsetApplication ?? false,
+   );
+ 
+-  const { headerLeftBarButtonItems, headerRightBarButtonItems } = props;
++  const {
++    headerLeftBarButtonItems,
++    headerRightBarButtonItems,
++    headerCenterBarButtonItems,
++    headerToolbarItems,
++  } = props;
+ 
+   const preparedHeaderLeftBarButtonItems =
+     headerLeftBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
+@@ -64,22 +69,36 @@
+     headerRightBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
+       ? prepareHeaderBarButtonItems(headerRightBarButtonItems, 'right')
+       : undefined;
++  const preparedHeaderCenterBarButtonItems =
++    headerCenterBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
++      ? prepareHeaderBarButtonItems(headerCenterBarButtonItems, 'center')
++      : undefined;
++  const preparedHeaderToolbarItems =
++    headerToolbarItems && isHeaderBarButtonsAvailableForCurrentPlatform
++      ? prepareHeaderBarButtonItems(headerToolbarItems, 'toolbar')
++      : undefined;
+   const hasHeaderBarButtonItems =
+     isHeaderBarButtonsAvailableForCurrentPlatform &&
+     (preparedHeaderLeftBarButtonItems?.length ||
+-      preparedHeaderRightBarButtonItems?.length);
++      preparedHeaderRightBarButtonItems?.length ||
++      preparedHeaderCenterBarButtonItems?.length ||
++      preparedHeaderToolbarItems?.length);
+ 
+   // Handle bar button item presses
+   const onPressHeaderBarButtonItem = hasHeaderBarButtonItems
+     ? (event: NativeSyntheticEvent<{ buttonId: string }>) => {
+-        const pressedItem = [
++        const buttonId = event.nativeEvent.buttonId;
++        const allItems = [
+           ...(preparedHeaderLeftBarButtonItems ?? []),
+           ...(preparedHeaderRightBarButtonItems ?? []),
+-        ].find(
++          ...(preparedHeaderCenterBarButtonItems ?? []),
++          ...(preparedHeaderToolbarItems ?? []),
++        ];
++        const pressedItem = allItems.find(
+           item =>
+             item &&
+             'buttonId' in item &&
+-            item.buttonId === event.nativeEvent.buttonId,
++            item.buttonId === buttonId,
+         );
+         if (
+           pressedItem &&
+@@ -87,6 +106,32 @@
+           pressedItem.onPress
+         ) {
+           pressedItem.onPress();
++          return;
++        }
++        for (const item of allItems) {
++          if (!item || item.type !== 'mailSearchToolbar') {
++            continue;
++          }
++          if (item.filterButtonId === buttonId) {
++            item.onFilterPress?.();
++            return;
++          }
++          if (item.composeButtonId === buttonId) {
++            item.onComposePress?.();
++            return;
++          }
++          const searchTextChangePrefix = item.searchTextChangeId
++            ? `${item.searchTextChangeId}:`
++            : undefined;
++          if (
++            searchTextChangePrefix &&
++            buttonId.startsWith(searchTextChangePrefix)
++          ) {
++            item.onSearchTextChange?.(
++              buttonId.slice(searchTextChangePrefix.length),
++            );
++            return;
++          }
+         }
+       }
+     : undefined;
+@@ -117,6 +162,8 @@
+         const allItems = [
+           ...(preparedHeaderLeftBarButtonItems ?? []),
+           ...(preparedHeaderRightBarButtonItems ?? []),
++          ...(preparedHeaderCenterBarButtonItems ?? []),
++          ...(preparedHeaderToolbarItems ?? []),
+         ];
+         for (const item of allItems) {
+           if (item && item.type === 'menu' && item.menu) {
+@@ -125,6 +172,17 @@
+               action.onPress();
+               return;
+             }
++          } else if (item && item.type === 'mailSearchToolbar') {
++            const toolbarMenus = [item.filterMenu, item.composeMenu].filter(
++              Boolean,
++            );
++            for (const toolbarMenu of toolbarMenus) {
++              const action = toolbarMenu ? findInMenu(toolbarMenu, event.nativeEvent.menuId) : undefined;
++              if (action) {
++                action.onPress();
++                return;
++              }
++            }
+           }
+         }
+       }
+@@ -136,6 +194,8 @@
+       userInterfaceStyle={props.experimental_userInterfaceStyle}
+       headerLeftBarButtonItems={preparedHeaderLeftBarButtonItems}
+       headerRightBarButtonItems={preparedHeaderRightBarButtonItems}
++      headerCenterBarButtonItems={preparedHeaderCenterBarButtonItems}
++      headerToolbarItems={preparedHeaderToolbarItems}
+       onPressHeaderBarButtonItem={onPressHeaderBarButtonItem}
+       onPressHeaderBarButtonMenuItem={onPressHeaderBarButtonMenuItem}
+       ref={ref}
+diff --git a/src/legacy/components/helpers/prepareHeaderBarButtonItems.ts b/src/legacy/components/helpers/prepareHeaderBarButtonItems.ts
+--- a/src/legacy/components/helpers/prepareHeaderBarButtonItems.ts
++++ b/src/legacy/components/helpers/prepareHeaderBarButtonItems.ts
+@@ -12,7 +12,7 @@
+ const prepareMenu = (
+   menu: HeaderBarButtonItemWithMenu['menu'],
+   index: number,
+-  side: 'left' | 'right',
++  placement: 'left' | 'right' | 'center' | 'toolbar',
+   path: string = '',
+ ): HeaderBarButtonItemWithMenu['menu'] => {
+   return {
+@@ -39,7 +39,7 @@
+           xcassetName,
+           imageSource,
+           templateSource,
+-          ...prepareMenu(menuItem, index, side, currentPath),
++          ...prepareMenu(menuItem, index, placement, currentPath),
+         };
+       }
+       return {
+@@ -48,19 +48,52 @@
+         xcassetName,
+         imageSource,
+         templateSource,
+-        menuId: `${currentPath}-${index}-${side}`,
++        menuId: `${currentPath}-${index}-${placement}`,
+       };
+     }),
+   };
+ };
+ 
+ export const prepareHeaderBarButtonItems = (
+-  barButtonItems: HeaderBarButtonItem[],
+-  side: 'left' | 'right',
++  barButtonItems:
++    | HeaderBarButtonItem[]
++    | HeaderBarButtonItem
++    | null
++    | undefined,
++  placement: 'left' | 'right' | 'center' | 'toolbar',
+ ) => {
+-  return barButtonItems?.map((item, index) => {
++  const items = Array.isArray(barButtonItems)
++    ? barButtonItems
++    : barButtonItems && typeof barButtonItems === 'object' && 'type' in barButtonItems
++      ? [barButtonItems]
++      : undefined;
++
++  return items?.map((item, index) => {
+     if (item.type === 'spacing') {
+       return item;
++    }
++    if (item.type === 'searchBarPlacement') {
++      if (placement !== 'toolbar') {
++        return null;
++      }
++      return {
++        ...item,
++        searchBarPlacement: true,
++      };
++    }
++    if (item.type === 'searchField') {
++      return {
++        ...item,
++        searchField: true,
++      };
++    }
++    if (item.type === 'mailSearchToolbar') {
++      return {
++        ...item,
++        mailSearchToolbar: true,
++        filterMenu: item.filterMenu ? prepareMenu(item.filterMenu, index, placement, 'filter') : undefined,
++        composeMenu: item.composeMenu ? prepareMenu(item.composeMenu, index, placement, 'compose') : undefined,
++      };
+     }
+     let imageSource: ResolvedImageAsset | undefined,
+       templateSource: ResolvedImageAsset | undefined;
+@@ -97,15 +130,15 @@
+     if (item.type === 'button') {
+       return {
+         ...processedItem,
+-        buttonId: `${index}-${side}`,
++        buttonId: `${index}-${placement}`,
+       };
+     }
+     if (item.type === 'menu') {
+       return {
+         ...processedItem,
+-        menu: prepareMenu(item.menu, index, side),
++        menu: prepareMenu(item.menu, index, placement),
+       };
+     }
+     return null;
+-  });
++  }).filter(item => item !== null);
+ };
+diff --git a/src/legacy/components/helpers/sheet.tsx b/src/legacy/components/helpers/sheet.tsx
+--- a/src/legacy/components/helpers/sheet.tsx
++++ b/src/legacy/components/helpers/sheet.tsx
+@@ -10,7 +10,7 @@
+ 
+ export function assertDetentsArrayIsSorted(array: number[]) {
+   for (let i = 1; i < array.length; i++) {
+-    if (array[i - 1] > array[i]) {
++    if (array[i - 1]! > array[i]!) {
+       throw new Error(
+         '[RNScreens] The detent array is not sorted in ascending order!',
+       );
+diff --git a/src/legacy/types.ts b/src/legacy/types.ts
+--- a/src/legacy/types.ts
++++ b/src/legacy/types.ts
+@@ -35,6 +35,7 @@
+ };
+ 
+ export type BackButtonDisplayMode = 'default' | 'generic' | 'minimal';
++export type NavigationItemStyle = 'navigator' | 'browser' | 'editor';
+ 
+ export type StackPresentationTypes =
+   | 'push'
+@@ -731,6 +732,14 @@
+    */
+   backButtonDisplayMode?: BackButtonDisplayMode | undefined;
+   /**
++   * Controls the UIKit `UINavigationItem.style` used by native iOS headers.
++   *
++   * `editor` matches modern document/editor-style bars with leading-aligned compact titles and glass controls.
++   *
++   * @platform ios
++   */
++  navigationItemStyle?: NavigationItemStyle | undefined;
++  /**
+    * Array of UIBarButtomItems to the left side of the header.
+    *
+    * @platform ios
+@@ -742,6 +751,26 @@
+    * @platform ios
+    */
+   headerRightBarButtonItems?: HeaderBarButtonItem[] | undefined;
++  /**
++   * Array of UIBarButtonItems to the centered item group in modern iOS headers.
++   *
++   * This maps to `UINavigationItem.centerItemGroups` on iOS 26+ and lets
++   * document/editor-style chrome keep primary actions visually centered while
++   * leaving trailing search separate.
++   *
++   * @platform ios
++   */
++  headerCenterBarButtonItems?: HeaderBarButtonItem[] | undefined;
++  /**
++   * Array of UIBarButtonItems to display in the native toolbar attached to
++   * the current screen's navigation controller.
++   *
++   * On iOS 26+, this can contain a `searchBarPlacement` item to let UIKit
++   * render integrated Mail-style search chrome using the attached SearchBar.
++   *
++   * @platform ios
++   */
++  headerToolbarItems?: HeaderBarButtonItem[] | undefined;
+   /**
+    * When set to true the header will be hidden while the parent Screen is on the top of the stack. The default value is false.
+    */
+@@ -803,6 +832,20 @@
+    * String that can be displayed in the header as a fallback for `headerTitle`.
+    */
+   title?: string | undefined;
++  /**
++   * String displayed below the compact navigation title on iOS 26+.
++   *
++   * @platform ios
++   */
++  subtitle?: string | undefined;
++  /**
++   * String displayed below the large navigation title on iOS 26+.
++   *
++   * Falls back to `subtitle` when omitted.
++   *
++   * @platform ios
++   */
++  largeSubtitle?: string | undefined;
+   /**
+    * Allows for setting text color of the title.
+    */
+@@ -1116,6 +1159,13 @@
+ 
+ export interface ScreenStackHeaderSubviewProps {
+   /**
++   * An identifier used to match this item across navigation bar transitions.
++   * Only applicable to type="right" and type="left" subviews on iOS 26.0 and later.
++   *
++   * Read more: https://developer.apple.com/documentation/uikit/uibarbuttonitem/identifier
++   */
++  identifier?: string | undefined;
++  /**
+    * A boolean value indicating whether the background this item may share with other items in the bar should be hidden.
+    * Only applicable to type="right" and type="left" subviews.
+    * Only available from iOS 26.0 and later.
+@@ -1156,6 +1206,11 @@
+    * Read more: https://developer.apple.com/documentation/uikit/uibarbuttonitem/style-swift.property
+    */
+   variant?: 'plain' | 'done' | 'prominent' | undefined;
++  /**
++   * Render the item with UIButtonConfiguration.glassButtonConfiguration.
++   * Only available from iOS 26.0 and later.
++   */
++  glassEffect?: boolean | undefined;
+   /**
+    * The tint color to apply to the item.
+    *
+@@ -1311,11 +1366,47 @@
+ export interface HeaderBarButtonItemSpacing {
+   type: 'spacing';
+   spacing: number;
++  flexible?: boolean | undefined;
++}
++
++export interface HeaderBarButtonSearchBarPlacementItem {
++  type: 'searchBarPlacement';
++  activatesSearchController?: boolean | undefined;
++  customView?: boolean | undefined;
++  index?: number | undefined;
++  width?: number | undefined;
++}
++
++export interface HeaderBarButtonSearchFieldItem {
++  type: 'searchField';
++  placeholder?: string | undefined;
++  width?: number | undefined;
++}
++
++export interface HeaderBarButtonMailSearchToolbarItem {
++  type: 'mailSearchToolbar';
++  composeButtonId?: string | undefined;
++  composeMenu?: HeaderBarButtonItemWithMenu['menu'] | undefined;
++  composeSystemImageName?: string | undefined;
++  filterButtonId?: string | undefined;
++  filterMenu?: HeaderBarButtonItemWithMenu['menu'] | undefined;
++  filterSystemImageName?: string | undefined;
++  onComposePress?: (() => void) | undefined;
++  onFilterPress?: (() => void) | undefined;
++  onSearchTextChange?: ((text: string) => void) | undefined;
++  placeholder?: string | undefined;
++  searchTextChangeId?: string | undefined;
++  showsSearchDismissButton?: boolean | undefined;
++  useFallbackSearchField?: boolean | undefined;
++  width?: number | undefined;
+ }
+ 
+ export type HeaderBarButtonItem =
+   | HeaderBarButtonItemWithAction
+   | HeaderBarButtonItemWithMenu
++  | HeaderBarButtonMailSearchToolbarItem
++  | HeaderBarButtonSearchFieldItem
++  | HeaderBarButtonSearchBarPlacementItem
+   | HeaderBarButtonItemSpacing;
+ 
+ /**
