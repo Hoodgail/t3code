@@ -17,6 +17,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -188,12 +189,23 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         environment: processEnv,
       });
       const connect = external ? connectExternal : serverOwner.acquire;
-      const isNative = external
+      // The API generation is fixed for the lifetime of a driver instance
+      // (settings changes rebuild the driver), so probe it once and reuse the
+      // answer. A failed probe is not remembered so a later call can retry.
+      const probeNative = external
         ? connectExternal.pipe(
             Effect.map((server) => server.version.startsWith("2.")),
             Effect.scoped,
           )
         : serverOwner.withServer((server) => Effect.succeed(server.version.startsWith("2.")));
+      const nativeRef = yield* Ref.make<boolean | null>(null);
+      const isNative = Ref.get(nativeRef).pipe(
+        Effect.flatMap((cached) =>
+          cached !== null
+            ? Effect.succeed(cached)
+            : probeNative.pipe(Effect.tap((native) => Ref.set(nativeRef, native))),
+        ),
+      );
       const nativeAdapter = OpenCode2Adapter.make({
         instanceId,
         connect: connect.pipe(Effect.map(Native.make)),
